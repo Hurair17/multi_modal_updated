@@ -38,7 +38,7 @@ def parse_args():
                         help="Base image size in pixels (default: 416)")
     parser.add_argument("--nc",           type=int,   default=10,
                         help="Number of classes (default: 10)")
-    parser.add_argument("--fusion_type",  type=str,   default="gated",
+    parser.add_argument("--fusion_type",  type=str,   default="cross_attn",
                         choices=["gated", "cross_attn", "gated_bilinear", "adapt_gated"],
                         help="Fusion module type (default: gated)")
     parser.add_argument("--workers",      type=int,   default=4,

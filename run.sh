@@ -3,20 +3,32 @@
 # Multimodal YOLO11 (Camera + LiDAR Fusion) — Server Run Script
 # =============================================================
 # Usage:
-#   bash run.sh                          # auto-detect nuScenes path
+#   bash run.sh                               # auto-detect nuScenes
 #   NUSC_ROOT=/path/to/nuscenes bash run.sh   # manual override
 #
-# Outputs:
-#   generated_dataset/   <- processed images + labels
-#   runs_multimodal/     <- multimodal training checkpoints + logs
-#   runs_baseline/       <- camera-only YOLO11m baseline
-#   multimodal_results.tar.gz  <- everything packaged for download
+# Dataset stays next to the repo (server does not delete it).
+# Training results → /app/output/hurair_cross_attn/   (persistent)
+#   runs_multimodal/      checkpoints + CSV log
+#   results.tar.gz        packaged for download
 # =============================================================
 set -euo pipefail
 
-cd "$(dirname "$0")"
+# Where the repo lives (all .py files)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Persistent output folder on the server
+OUT="/app/output/hurair_cross_attn"
+mkdir -p "$OUT"
+
+# Dataset stays local (not deleted by server)
+OUTPUT_DIR="$SCRIPT_DIR/generated_dataset"
+
+cd "$SCRIPT_DIR"
 
 echo "===== Multimodal YOLO11 — Camera + LiDAR Fusion ====="
+echo "Script dir : $SCRIPT_DIR"
+echo "Output dir : $OUT"
+echo "Dataset    : $OUTPUT_DIR"
 
 # ===========================================================
 # 1. System check
@@ -173,8 +185,6 @@ echo "CAM_FRONT     : $(find "$NUSC_ROOT/samples/CAM_FRONT" -maxdepth 1 -type f 
 echo ""
 echo "===== Generate dataset (scene-level split, seed=42) ====="
 
-OUTPUT_DIR="$(pwd)/generated_dataset"
-
 if [[ -f "$OUTPUT_DIR/data.yaml" ]]; then
     N_TRAIN=$(find "$OUTPUT_DIR/train/camera" -name '*.jpg' 2>/dev/null | wc -l || echo 0)
     N_VAL=$(find   "$OUTPUT_DIR/val/camera"   -name '*.jpg' 2>/dev/null | wc -l || echo 0)
@@ -199,72 +209,75 @@ fi
 #    ultralytics finds labels via /images/ -> /labels/ substitution,
 #    so copy labels into camera/ and point yaml at camera/ directly.
 # ===========================================================
-echo ""
-echo "===== Prepare camera-only dataset for YOLO ====="
+# echo ""
+# echo "===== Prepare camera-only dataset for YOLO ====="
 
-OUTPUT_DIR_ESC="$OUTPUT_DIR" python - <<'PY'
-import shutil, os
-base = os.environ["OUTPUT_DIR_ESC"]
-for split in ["train", "val"]:
-    ldir = os.path.join(base, split, "labels")
-    cdir = os.path.join(base, split, "camera")
-    if not os.path.isdir(ldir):
-        print(f"  {split}: labels dir missing, skipping")
-        continue
-    files = [f for f in os.listdir(ldir) if f.endswith(".txt")]
-    copied = sum(
-        1 for f in files
-        if not os.path.exists(os.path.join(cdir, f))
-        and shutil.copy2(os.path.join(ldir, f), os.path.join(cdir, f)) is None
-    )
-    print(f"  {split}: {copied} label files copied into camera/ ({len(files)} total)")
-PY
+# OUTPUT_DIR_ESC="$OUTPUT_DIR" python - <<'PY'
+# import shutil, os
+# base = os.environ["OUTPUT_DIR_ESC"]
+# for split in ["train", "val"]:
+#     ldir = os.path.join(base, split, "labels")
+#     cdir = os.path.join(base, split, "camera")
+#     if not os.path.isdir(ldir):
+#         print(f"  {split}: labels dir missing, skipping")
+#         continue
+#     files = [f for f in os.listdir(ldir) if f.endswith(".txt")]
+#     copied = sum(
+#         1 for f in files
+#         if not os.path.exists(os.path.join(cdir, f))
+#         and shutil.copy2(os.path.join(ldir, f), os.path.join(cdir, f)) is None
+#     )
+#     print(f"  {split}: {copied} label files copied into camera/ ({len(files)} total)")
+# PY
 
 # Write camera_only.yaml with server-local absolute path
-cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
-path: $OUTPUT_DIR
-train: train/camera
-val:   val/camera
-nc: 10
-names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
-YAML
-echo "Written: $OUTPUT_DIR/camera_only.yaml"
+# cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
+# path: $OUTPUT_DIR
+# train: train/camera
+# val:   val/camera
+# nc: 10
+# names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
+# YAML
+# echo "Written: $OUTPUT_DIR/camera_only.yaml"
 
 # ===========================================================
 # 8. Camera-only YOLO11m baseline (reviewer ablation)
 # ===========================================================
-echo ""
-echo "===== Camera-only YOLO11m baseline ====="
+# echo ""
+# echo "===== Camera-only YOLO11m baseline ====="
 
-yolo train \
-    model=yolo11m.yaml \
-    data="$OUTPUT_DIR/camera_only.yaml" \
-    epochs=100 \
-    batch=4 \
-    imgsz=416 \
-    multi_scale=True \
-    device=0 \
-    workers=4 \
-    project=runs_baseline \
-    name=yolo11m_camera_only \
-    pretrained=False
+# yolo train \
+#     model=yolo11m.yaml \
+#     data="$OUTPUT_DIR/camera_only.yaml" \
+#     epochs=100 \
+#     batch=4 \
+#     imgsz=416 \
+#     multi_scale=True \
+#     device=0 \
+#     workers=4 \
+#     project=runs_baseline \
+#     name=yolo11m_camera_only \
+#     pretrained=False
 
-echo "Camera-only baseline done."
+# echo "Camera-only baseline done."
 
 # ===========================================================
 # 9. Train Multimodal YOLO11 (main model)
 # ===========================================================
 echo ""
-echo "===== Train Multimodal YOLO11 (gated fusion) ====="
+echo "===== Train Multimodal YOLO11 (cross_attn fusion) ====="
 
-python train.py \
+# cd into OUT so runs_multimodal/ and CSV logs are created inside /app/output/hurair_cross_attn/
+cd "$OUT"
+python "$SCRIPT_DIR/train.py" \
     --data_root "$OUTPUT_DIR" \
     --epochs 100 \
     --batch_size 4 \
     --img_size 416 \
     --nc 10 \
-    --fusion_type gated \
+    --fusion_type cross_attn \
     --workers 4
+cd "$SCRIPT_DIR"
 
 echo "Multimodal training done."
 
@@ -274,20 +287,23 @@ echo "Multimodal training done."
 echo ""
 echo "===== Save results ====="
 
-mkdir -p server_results
+# Copy supporting files into OUT (scene report + dataset yaml)
+cp "$OUTPUT_DIR/scene_split_report.txt" "$OUT/" 2>/dev/null || true
+cp "$OUTPUT_DIR/data.yaml"              "$OUT/" 2>/dev/null || true
 
-cp -r runs_multimodal                         server_results/ 2>/dev/null || true
-cp -r runs_baseline                           server_results/ 2>/dev/null || true
-cp    "$OUTPUT_DIR/scene_split_report.txt"    server_results/ 2>/dev/null || true
-cp    "$OUTPUT_DIR/data.yaml"                 server_results/ 2>/dev/null || true
-
-tar -czf multimodal_results.tar.gz server_results/
+# Package only the results (not the large dataset images)
+tar -czf "$OUT/results.tar.gz" \
+    -C "$OUT" \
+    runs_multimodal \
+    scene_split_report.txt \
+    data.yaml \
+    2>/dev/null || true
 
 echo ""
 echo "============================================================"
 echo "DONE"
-echo "Download: multimodal_results.tar.gz"
-echo "  runs_multimodal/  <- multimodal checkpoints, CSV log"
-echo "  runs_baseline/    <- camera-only baseline checkpoints"
-echo "  scene_split_report.txt  <- train/val scene listing"
+echo "All outputs : $OUT/"
+echo "Download    : $OUT/results.tar.gz"
+echo "  runs_multimodal/        checkpoints, CSV log"
+echo "  scene_split_report.txt  train/val scene list (for paper)"
 echo "============================================================"
