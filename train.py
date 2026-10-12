@@ -17,6 +17,23 @@ from multimodal_dataset import MultiModalYoloDataset
 from ultralytics.utils.loss import v8DetectionLoss
 from balanced_sampler import ClassBalancedSampler, InstanceBalancedSampler
 
+# ---------------------------------------------------------------------------
+# Runtime API detection: ultralytics 8.3.x ships two different v8DetectionLoss
+# implementations that share the same version string.
+#   NEW API (local):  loss expects preds = {"boxes": ..., "scores": ..., "feats": [...]}
+#   OLD API (server): loss expects preds = [feat_s, feat_m, feat_l]  (raw list)
+# We detect which one is installed and adapt at runtime.
+# ---------------------------------------------------------------------------
+import inspect as _inspect
+try:
+    _LOSS_NEEDS_DICT = (
+        '"boxes"' in _inspect.getsource(v8DetectionLoss)
+        or "'boxes'" in _inspect.getsource(v8DetectionLoss)
+    )
+except Exception:
+    _LOSS_NEEDS_DICT = False
+print(f"[INFO] v8DetectionLoss API: {'dict (new)' if _LOSS_NEEDS_DICT else 'list (old)'}")
+
 from typing import List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
@@ -566,13 +583,17 @@ def validate(model, val_loader, loss_fn, device, img_size=512, compute_detailed_
 
                 # Temporarily disable AMP for loss computation (numerical stability)
                 with autocast(enabled=False):
-                    # Ensure predictions are in FP32
+                    # Ensure predictions are in FP32 and adapt to installed loss API
                     if isinstance(preds_train, dict):
-                        preds_train = {
-                            "boxes": preds_train["boxes"].float(),
-                            "scores": preds_train["scores"].float(),
-                            "feats": [f.float() for f in preds_train["feats"]],
-                        }
+                        if _LOSS_NEEDS_DICT:
+                            preds_train = {
+                                "boxes": preds_train["boxes"].float(),
+                                "scores": preds_train["scores"].float(),
+                                "feats": [f.float() for f in preds_train["feats"]],
+                            }
+                        else:
+                            # Old API: loss expects raw list of feature tensors
+                            preds_train = [f.float() for f in preds_train["feats"]]
                     elif isinstance(preds_train, (list, tuple)):
                         preds_train = [p.float() for p in preds_train]
                     else:
@@ -1065,13 +1086,18 @@ def main(args=None):
 
                     # SAFE PART: Temporarily disable AMP for the Loss Calculation
                     with autocast(enabled=False):
-                        # Cast predictions to float32 to prevent NaN during Box/IoU math
+                        # Cast predictions to float32 and adapt to installed loss API
                         if isinstance(preds, dict):
-                            preds = {
-                                "boxes": preds["boxes"].float(),
-                                "scores": preds["scores"].float(),
-                                "feats": [f.float() for f in preds["feats"]],
-                            }
+                            if _LOSS_NEEDS_DICT:
+                                # New API: pass dict directly
+                                preds = {
+                                    "boxes": preds["boxes"].float(),
+                                    "scores": preds["scores"].float(),
+                                    "feats": [f.float() for f in preds["feats"]],
+                                }
+                            else:
+                                # Old API: loss expects raw list of feature tensors
+                                preds = [f.float() for f in preds["feats"]]
                         elif isinstance(preds, (list, tuple)):
                             preds = [p.float() for p in preds]
                         else:
