@@ -93,7 +93,8 @@ PY
 
 # ===========================================================
 # 5. Locate and extract nuScenes dataset
-#    Server path: datasets/split_nuscenes  (may be a zip)
+#    Primary: /app/data/datasets/split_nuscenes(.zip)
+#    Fallback: /app/data/nuscenes, /data/nuscenes, etc.
 # ===========================================================
 echo ""
 echo "===== Locate nuScenes dataset ====="
@@ -102,10 +103,12 @@ echo "===== Locate nuScenes dataset ====="
 # Try absolute first, then relative to script directory
 RAW_DATA_PATH=""
 for candidate in \
-    "/datasets/split_nuscenes" \
+    "/app/data/datasets/split_nuscenes.zip" \
+    "/app/data/datasets/split_nuscenes" \
     "/datasets/split_nuscenes.zip" \
-    "$(pwd)/datasets/split_nuscenes" \
-    "$(pwd)/datasets/split_nuscenes.zip"; do
+    "/datasets/split_nuscenes" \
+    "$(pwd)/datasets/split_nuscenes.zip" \
+    "$(pwd)/datasets/split_nuscenes"; do
     if [[ -e "$candidate" ]]; then
         RAW_DATA_PATH="$candidate"
         echo "Found data at: $RAW_DATA_PATH"
@@ -196,10 +199,12 @@ import sys, os
 sys.path.insert(0, "data_pipeline")
 import scene_level_pipeline as sl
 
-sl.DATASET_ROOT = os.environ["NUSC_ROOT"]
-sl.OUTPUT_ROOT  = os.environ["OUTPUT_DIR"]
-
-sl.run()
+# Pass paths explicitly — default parameter values are captured at import
+# time, so overriding sl.DATASET_ROOT after import has no effect.
+sl.run(
+    dataset_root=os.environ["NUSC_ROOT"],
+    output_root=os.environ["OUTPUT_DIR"],
+)
 PY
     echo "Dataset generation complete."
 fi
