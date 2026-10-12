@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+# =============================================================
+# Multimodal YOLO11 (Camera + LiDAR Fusion) — Server Run Script
+# =============================================================
+# Usage:
+#   bash run.sh                          # auto-detect nuScenes path
+#   NUSC_ROOT=/path/to/nuscenes bash run.sh   # manual override
+#
+# Outputs:
+#   generated_dataset/   <- processed images + labels
+#   runs_multimodal/     <- multimodal training checkpoints + logs
+#   runs_baseline/       <- camera-only YOLO11m baseline
+#   multimodal_results.tar.gz  <- everything packaged for download
+# =============================================================
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+echo "===== Multimodal YOLO11 — Camera + LiDAR Fusion ====="
+
+# ===========================================================
+# 1. System check
+# ===========================================================
+echo ""
+echo "===== System check ====="
+python --version
+nvidia-smi || true
+
+# ===========================================================
+# 2. Environment
+# ===========================================================
+echo ""
+echo "===== Environment ====="
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+
+# ===========================================================
+# 3. Install dependencies
+# ===========================================================
+echo ""
+echo "===== Install dependencies ====="
+
+pip install -U pip --quiet
+
+# Detect CUDA major version and install matching PyTorch
+CUDA_MAJOR=$(nvidia-smi 2>/dev/null \
+    | grep -oP "CUDA Version: \K[0-9]+" \
+    | head -1 \
+    || echo "12")
+echo "Detected CUDA major version: $CUDA_MAJOR"
+
+if [[ "$CUDA_MAJOR" -ge 13 ]]; then
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 --quiet
+elif [[ "$CUDA_MAJOR" -ge 12 ]]; then
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121 --quiet
+else
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118 --quiet
+fi
+
+# Pin ultralytics — the loss API changed across versions; code targets 8.3.x
+pip install -r requirements.txt --quiet
+
+# ===========================================================
+# 4. Verify imports
+# ===========================================================
+echo ""
+echo "===== Import verification ====="
+python - <<'PY'
+import torch, cv2, ultralytics, numpy, tqdm
+import pyquaternion  # noqa
+print("PyTorch     :", torch.__version__)
+print("CUDA avail  :", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("GPU         :", torch.cuda.get_device_name(0))
+    print("GPU memory  :", round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1), "GB")
+print("ultralytics :", ultralytics.__version__)
+print("OpenCV      :", cv2.__version__)
+print("numpy       :", numpy.__version__)
+print("pyquaternion: OK")
+PY
+
+# ===========================================================
+# 5. Locate and extract nuScenes dataset
+#    Server path: datasets/split_nuscenes  (may be a zip)
+# ===========================================================
+echo ""
+echo "===== Locate nuScenes dataset ====="
+
+# ---- Step 5a: find the zip / folder ----
+# Try absolute first, then relative to script directory
+RAW_DATA_PATH=""
+for candidate in \
+    "/datasets/split_nuscenes" \
+    "/datasets/split_nuscenes.zip" \
+    "$(pwd)/datasets/split_nuscenes" \
+    "$(pwd)/datasets/split_nuscenes.zip"; do
+    if [[ -e "$candidate" ]]; then
+        RAW_DATA_PATH="$candidate"
+        echo "Found data at: $RAW_DATA_PATH"
+        break
+    fi
+done
+
+if [[ -z "$RAW_DATA_PATH" ]]; then
+    echo "WARNING: datasets/split_nuscenes not found at expected paths."
+    echo "Falling back to auto-detection..."
+fi
+
+# ---- Step 5b: extract if it is a zip ----
+EXTRACT_DIR="$(pwd)/nuscenes_extracted"
+
+if [[ "$RAW_DATA_PATH" == *.zip ]]; then
+    echo "Extracting zip: $RAW_DATA_PATH -> $EXTRACT_DIR ..."
+    mkdir -p "$EXTRACT_DIR"
+    unzip -q "$RAW_DATA_PATH" -d "$EXTRACT_DIR"
+    echo "Extraction complete."
+    # After extraction the nuScenes root is either the extract dir itself
+    # or a subdirectory — probe both
+    NUSC_ROOT=""
+    for probe in "$EXTRACT_DIR" "$EXTRACT_DIR"/*/; do
+        probe="${probe%/}"   # strip trailing slash
+        if [[ -d "$probe/v1.0-trainval" ]]; then
+            NUSC_ROOT="$probe"
+            break
+        fi
+    done
+elif [[ -d "$RAW_DATA_PATH" ]]; then
+    # Already a directory; check if it IS the root or contains the root
+    NUSC_ROOT=""
+    for probe in "$RAW_DATA_PATH" "$RAW_DATA_PATH"/*/; do
+        probe="${probe%/}"
+        if [[ -d "$probe/v1.0-trainval" ]]; then
+            NUSC_ROOT="$probe"
+            break
+        fi
+    done
+fi
+
+# ---- Step 5c: fall back to other common server locations ----
+if [[ -z "${NUSC_ROOT:-}" ]]; then
+    for candidate in \
+        "/app/data/nuscenes" \
+        "/app/data/nuscense" \
+        "/data/nuscenes" \
+        "/mnt/data/nuscenes"; do
+        if [[ -d "${candidate}/v1.0-trainval" ]]; then
+            NUSC_ROOT="$candidate"
+            break
+        fi
+    done
+fi
+
+if [[ -z "${NUSC_ROOT:-}" ]]; then
+    echo "ERROR: Cannot find nuScenes root (directory containing v1.0-trainval/)."
+    echo ""
+    echo "Override manually:"
+    echo "  NUSC_ROOT=/path/to/nuscenes bash run.sh"
+    echo ""
+    echo "Searching server for 'v1.0-trainval':"
+    find / -maxdepth 7 -type d -name "v1.0-trainval" 2>/dev/null | head -15 || true
+    exit 1
+fi
+
+echo "nuScenes root : $NUSC_ROOT"
+echo "Metadata dir  : $NUSC_ROOT/v1.0-trainval"
+echo "JSON files    : $(find "$NUSC_ROOT/v1.0-trainval" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l)"
+echo "LiDAR samples : $(find "$NUSC_ROOT/samples/LIDAR_TOP" -maxdepth 1 -type f 2>/dev/null | wc -l)"
+echo "CAM_FRONT     : $(find "$NUSC_ROOT/samples/CAM_FRONT" -maxdepth 1 -type f 2>/dev/null | wc -l)"
+
+# ===========================================================
+# 6. Generate dataset (scene-level split, seed=42)
+# ===========================================================
+echo ""
+echo "===== Generate dataset (scene-level split, seed=42) ====="
+
+OUTPUT_DIR="$(pwd)/generated_dataset"
+
+if [[ -f "$OUTPUT_DIR/data.yaml" ]]; then
+    N_TRAIN=$(find "$OUTPUT_DIR/train/camera" -name '*.jpg' 2>/dev/null | wc -l || echo 0)
+    N_VAL=$(find   "$OUTPUT_DIR/val/camera"   -name '*.jpg' 2>/dev/null | wc -l || echo 0)
+    echo "Dataset already exists: $N_TRAIN train / $N_VAL val images. Skipping generation."
+else
+    echo "Generating from $NUSC_ROOT  ->  $OUTPUT_DIR ..."
+    NUSC_ROOT="$NUSC_ROOT" OUTPUT_DIR="$OUTPUT_DIR" python - <<'PY'
+import sys, os
+sys.path.insert(0, "data_pipeline")
+import scene_level_pipeline as sl
+
+sl.DATASET_ROOT = os.environ["NUSC_ROOT"]
+sl.OUTPUT_ROOT  = os.environ["OUTPUT_DIR"]
+
+sl.run()
+PY
+    echo "Dataset generation complete."
+fi
+
+# ===========================================================
+# 7. Prepare camera-only YOLO dataset
+#    ultralytics finds labels via /images/ -> /labels/ substitution,
+#    so copy labels into camera/ and point yaml at camera/ directly.
+# ===========================================================
+echo ""
+echo "===== Prepare camera-only dataset for YOLO ====="
+
+OUTPUT_DIR_ESC="$OUTPUT_DIR" python - <<'PY'
+import shutil, os
+base = os.environ["OUTPUT_DIR_ESC"]
+for split in ["train", "val"]:
+    ldir = os.path.join(base, split, "labels")
+    cdir = os.path.join(base, split, "camera")
+    if not os.path.isdir(ldir):
+        print(f"  {split}: labels dir missing, skipping")
+        continue
+    files = [f for f in os.listdir(ldir) if f.endswith(".txt")]
+    copied = sum(
+        1 for f in files
+        if not os.path.exists(os.path.join(cdir, f))
+        and shutil.copy2(os.path.join(ldir, f), os.path.join(cdir, f)) is None
+    )
+    print(f"  {split}: {copied} label files copied into camera/ ({len(files)} total)")
+PY
+
+# Write camera_only.yaml with server-local absolute path
+cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
+path: $OUTPUT_DIR
+train: train/camera
+val:   val/camera
+nc: 10
+names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
+YAML
+echo "Written: $OUTPUT_DIR/camera_only.yaml"
+
+# ===========================================================
+# 8. Camera-only YOLO11m baseline (reviewer ablation)
+# ===========================================================
+echo ""
+echo "===== Camera-only YOLO11m baseline ====="
+
+yolo train \
+    model=yolo11m.yaml \
+    data="$OUTPUT_DIR/camera_only.yaml" \
+    epochs=100 \
+    batch=4 \
+    imgsz=416 \
+    multi_scale=True \
+    device=0 \
+    workers=4 \
+    project=runs_baseline \
+    name=yolo11m_camera_only \
+    pretrained=False
+
+echo "Camera-only baseline done."
+
+# ===========================================================
+# 9. Train Multimodal YOLO11 (main model)
+# ===========================================================
+echo ""
+echo "===== Train Multimodal YOLO11 (gated fusion) ====="
+
+python train.py \
+    --data_root "$OUTPUT_DIR" \
+    --epochs 100 \
+    --batch_size 4 \
+    --img_size 416 \
+    --nc 10 \
+    --fusion_type gated \
+    --workers 4
+
+echo "Multimodal training done."
+
+# ===========================================================
+# 10. Package results
+# ===========================================================
+echo ""
+echo "===== Save results ====="
+
+mkdir -p server_results
+
+cp -r runs_multimodal                         server_results/ 2>/dev/null || true
+cp -r runs_baseline                           server_results/ 2>/dev/null || true
+cp    "$OUTPUT_DIR/scene_split_report.txt"    server_results/ 2>/dev/null || true
+cp    "$OUTPUT_DIR/data.yaml"                 server_results/ 2>/dev/null || true
+
+tar -czf multimodal_results.tar.gz server_results/
+
+echo ""
+echo "============================================================"
+echo "DONE"
+echo "Download: multimodal_results.tar.gz"
+echo "  runs_multimodal/  <- multimodal checkpoints, CSV log"
+echo "  runs_baseline/    <- camera-only baseline checkpoints"
+echo "  scene_split_report.txt  <- train/val scene listing"
+echo "============================================================"
