@@ -163,9 +163,13 @@ class CrossAttnFusion2D(nn.Module):
         self.attn_cam_focus = nn.MultiheadAttention(embed_dim=in_channels_cam, num_heads=num_heads, dropout=dropout)
         self.attn_lidar_focus = nn.MultiheadAttention(embed_dim=in_channels_cam, num_heads=num_heads, dropout=dropout)
 
-        # Dropouts
-        self.dropout_pre = nn.Dropout2d(p=dropout)      # Spatial dropout on inputs
-        self.dropout_pre_cat = nn.Dropout(p=dropout)    # <--- NEW: The dropout you requested
+        # Layer Norm before attention: aligns feature distributions across modalities
+        self.norm_cam   = nn.LayerNorm(in_channels_cam)
+        self.norm_lidar = nn.LayerNorm(in_channels_cam)  # applied after lidar projection
+
+        # Dropouts: pre-attention spatial dropout capped at 0.1 (0.3 was too aggressive)
+        self.dropout_pre = nn.Dropout2d(p=min(dropout, 0.1))
+        self.dropout_pre_cat = nn.Dropout(p=dropout)
         
         # 3. Final Fusion Layer
         # Input is 2 * channels because we concatenate
@@ -184,8 +188,12 @@ class CrossAttnFusion2D(nn.Module):
         n, c, h, w = cam.shape
 
         # 3. Flatten for Attention (Sequence Length, Batch, Channels)
-        src_cam = cam_d.view(n, c, h * w).permute(2, 0, 1)
-        src_lidar = lidar_d.view(n, c, h * w).permute(2, 0, 1)
+        src_cam   = cam_d.view(n, c, h * w).permute(2, 0, 1)    # [L, B, C]
+        src_lidar = lidar_d.view(n, c, h * w).permute(2, 0, 1)  # [L, B, C]
+
+        # 4. Layer Norm before attention
+        src_cam   = self.norm_cam(src_cam)
+        src_lidar = self.norm_lidar(src_lidar)
 
         # --- BRANCH 1: Camera Context ---
         # Q=Cam, K=LiDAR, V=LiDAR
@@ -242,8 +250,8 @@ class LearnableGatedBilinearFusion(nn.Module):
         # This 1x1 Conv learns the multiplicative interaction matrix between A and B channels
         # Concatenate A and B for the input to the interaction layer
         self.bilinear_interaction = nn.Sequential(
-            nn.Conv2d(fusion_channels * 2, fusion_channels, 1), # Project back to feature dimension
-            nn.ReLU(inplace=True)
+            nn.Conv2d(fusion_channels * 2, fusion_channels, 1),
+            nn.SiLU()
         )
         
         # 2. Gate Mechanism (Similar to Squeeze-and-Excitation or Gated Fusion)
@@ -386,10 +394,11 @@ class MultiModalYOLO11(nn.Module):
         # mAP50 = 83.6 % 46.84 hour
         elif fusion_type == "cross_attn":
             print("Cross Attention")
-            # CrossAttnFusion can handle different input channels
-            self.fuse_p3 = CrossAttnFusion2D(768, 512, 768, num_heads=8, dropout=0.3)    # cam=768, lidar=512, out=768
-            self.fuse_p4 = CrossAttnFusion2D(768, 512, 768, num_heads=8, dropout=0.3)    # cam=768, lidar=512, out=768
-            self.fuse_p5 = CrossAttnFusion2D(1536, 1024, 1536, num_heads=8, dropout=0.3) # cam=1536, lidar=1024, out=1536
+            # dropout reduced 0.3->0.1: 0.3 spatial dropout pre-attention was too aggressive
+            # P3 fuse: attention will run on pooled (26x26=676 tokens) in forward() to save memory
+            self.fuse_p3 = CrossAttnFusion2D(768, 512, 768, num_heads=8, dropout=0.1)
+            self.fuse_p4 = CrossAttnFusion2D(768, 512, 768, num_heads=8, dropout=0.1)
+            self.fuse_p5 = CrossAttnFusion2D(1536, 1024, 1536, num_heads=8, dropout=0.1)
         # mAP50 = 82.5 %  27.08 hour
         elif fusion_type == "gated_bilinear":
             # LearnableGatedBilinearFusion can handle different input channels
@@ -409,8 +418,10 @@ class MultiModalYOLO11(nn.Module):
         self.head = YOLO11HybridHeadFused(nc=nc, cam_p3_ch=768, cam_p4_ch=768, cam_p5_ch=1536)
 
     def forward(self, x_cam, x_lidar):
-        p3c, p4c, p5c = self.backbone_cam(x_cam)    # YOLOv11m: 768, 768, 1536
-        p3l, p4l, p5l = self.backbone_lidar(x_lidar) # YOLOv11n: 512, 512, 1024
+        import torch.nn.functional as F
+
+        p3c, p4c, p5c = self.backbone_cam(x_cam)     # YOLOv11m: 768, 768, 1536
+        p3l, p4l, p5l = self.backbone_lidar(x_lidar)  # YOLOv11n: 512, 512, 1024
 
         # For gated fusion, project LiDAR to match camera channels
         if self.fusion_type == "gated":
@@ -418,9 +429,20 @@ class MultiModalYOLO11(nn.Module):
             p4l = self.lidar_proj_p4(p4l)  # 512 -> 768
             p5l = self.lidar_proj_p5(p5l)  # 1024 -> 1536
 
-        p3 = self.fuse_p3(p3c, p3l)  # Output: 768
-        p4 = self.fuse_p4(p4c, p4l)  # Output: 768
-        p5 = self.fuse_p5(p5c, p5l)  # Output: 1536
+        if self.fusion_type == "cross_attn":
+            # P3 pooled attention: 52x52 -> 26x26 (676 tokens vs 2704 = 4x cheaper)
+            # This is the main OOM fix — P3 attention dominates memory at higher resolutions.
+            p3_fused = self.fuse_p3(
+                F.avg_pool2d(p3c, 2),
+                F.avg_pool2d(p3l, 2),
+            )
+            p3 = F.interpolate(p3_fused, size=p3c.shape[-2:], mode='bilinear', align_corners=False)
+            p4 = self.fuse_p4(p4c, p4l)
+            p5 = self.fuse_p5(p5c, p5l)
+        else:
+            p3 = self.fuse_p3(p3c, p3l)
+            p4 = self.fuse_p4(p4c, p4l)
+            p5 = self.fuse_p5(p5c, p5l)
 
         return self.head(p3, p4, p5)
     

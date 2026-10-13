@@ -51,7 +51,7 @@ CAMERA_NAMES = [
 ]
 
 TRAIN_RATIO    = 0.80   # 80% of scenes -> train
-MIN_VISIBILITY = 0.10   # discard boxes whose clipped visible area < 10%
+MIN_VISIBILITY = 0.30   # discard boxes whose clipped visible area < 30%
 MAX_DEPTH      = 80.0   # depth normalisation ceiling in metres
 RANDOM_SEED    = 42     # seed for scene shuffle inside each recording group
 
@@ -181,6 +181,12 @@ def scene_level_split(scenes_info, train_ratio=0.80, random_seed=42):
     for s in valid:
         groups[(s["date"], s["location"])].append(s)
 
+    # Global target: floor applied once to the full set (not per-group).
+    # Per-group floor() accumulates rounding errors that push 1 extra scene
+    # into val.  We correct afterwards to hit the exact global target.
+    n_total    = len(valid)
+    n_val_target = n_total - math.floor(n_total * train_ratio)  # e.g. 85-68=17
+
     train_scenes, val_scenes = [], []
     for _, group in sorted(groups.items()):
         group = list(group)               # copy before shuffling
@@ -191,6 +197,13 @@ def scene_level_split(scenes_info, train_ratio=0.80, random_seed=42):
             n_train = min(n_train, n - 1)
         train_scenes.extend(group[:n_train])
         val_scenes.extend(group[n_train:])
+
+    # Global correction: move excess val scenes to train (or vice-versa)
+    while len(val_scenes) > n_val_target and len(train_scenes) > 0:
+        train_scenes.append(val_scenes.pop())
+    while len(val_scenes) < n_val_target and len(train_scenes) > 1:
+        val_scenes.append(train_scenes.pop())
+
     return train_scenes, val_scenes
 
 
