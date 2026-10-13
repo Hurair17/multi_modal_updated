@@ -16,6 +16,31 @@ set -euo pipefail
 # Where the repo lives (all .py files)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# ===========================================================
+# 0. Git Fetch & Checkout New Branch
+# ===========================================================
+echo ""
+echo "===== Syncing Git Branch ====="
+
+# 1. Fetch all latest branches from GitHub
+git fetch origin
+
+# 2. Switch to your new branch (replace 'my-new-feature' with your real branch name)
+TARGET_BRANCH="modal_changes"
+
+if git show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
+    echo "Switching to existing local branch: $TARGET_BRANCH"
+    git checkout "$TARGET_BRANCH"
+else
+    echo "Creating and tracking remote branch: $TARGET_BRANCH"
+    git checkout -b "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+fi
+
+# 3. Pull the absolute newest code on that branch
+git pull origin "$TARGET_BRANCH"
+
+
+
 # Persistent output folder on the server
 OUT="/app/output/hurair_cross_attn"
 mkdir -p "$OUT"
