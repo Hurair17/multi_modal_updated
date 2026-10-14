@@ -336,15 +336,17 @@ class AdaptiveWeightedFusion(nn.Module):
         # This network predicts a single weight (or two, normalized) for the entire feature map.
         self.weight_net = nn.Sequential(
             # Global Average Pooling to reduce spatial dimensions (H, W -> 1, 1)
-            nn.AdaptiveAvgPool2d(1), 
+            nn.AdaptiveAvgPool2d(1),
             # 1x1 Conv to reduce complexity (similar to a fully connected layer)
             nn.Conv2d(weight_net_in_channels, weight_net_in_channels // 4, 1, bias=False),
-            nn.BatchNorm2d(weight_net_in_channels // 4),
-            nn.ReLU(inplace=True),
+            # GroupNorm(1, C) == LayerNorm for conv tensors; works with batch_size=1.
+            # BatchNorm2d fails here because spatial is always 1x1 after AdaptiveAvgPool2d.
+            nn.GroupNorm(1, weight_net_in_channels // 4),
+            nn.SiLU(),
             # Final 1x1 Conv to output 2 weights (one for A, one for B)
             nn.Conv2d(weight_net_in_channels // 4, 2, 1, bias=False),
             # Softmax to ensure weights sum to 1 and are non-negative
-            nn.Softmax(dim=1) 
+            nn.Softmax(dim=1)
         )
 
     def forward(self, a, b):
