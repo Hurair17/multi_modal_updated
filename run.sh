@@ -299,14 +299,7 @@ echo "===== Train Multimodal YOLO11 (cross_attn fusion) ====="
 
 # cd into OUT so runs_multimodal/ and CSV logs are created inside /app/output/hurair_cross_attn/
 cd "$OUT"
-python "$SCRIPT_DIR/train.py" \
-    --data_root "$OUTPUT_DIR" \
-    --epochs 100 \
-    --batch_size 4 \
-    --img_size 416 \
-    --nc 10 \
-    --fusion_type cross_attn \
-    --workers 4
+python "$SCRIPT_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 100 --batch_size 4 --img_size 416 --nc 10 --fusion_type cross_attn --workers 4
 cd "$SCRIPT_DIR"
 
 echo "Multimodal training done."
