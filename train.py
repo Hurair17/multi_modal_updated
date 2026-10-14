@@ -874,6 +874,7 @@ def main(args=None):
         pin_memory=True if device == "cuda" else False,
         persistent_workers=True,  # ✅ Keep workers alive between epochs
         collate_fn=multimodal_collate,
+        drop_last=True,         # prevent batch_size=1 at epoch end (BatchNorm crash)
     )
 
     val_loader = DataLoader(
