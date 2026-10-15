@@ -51,15 +51,65 @@ else
     echo "Files updated from fresh clone (branch: $TARGET_BRANCH)"
 fi
 
-# ── Verify the critical GroupNorm fix is present ────────────
+# ── Apply critical patches directly (git-independent, idempotent) ────
+# Runs AFTER git sync so it catches both: git-updated files AND original
+# uploaded files that git failed to update.
 echo ""
-if grep -q "GroupNorm(1, weight_net_in_channels // 4)" "$SCRIPT_DIR/multimodal_yolo11.py"; then
-    echo "✓ GroupNorm fix verified in multimodal_yolo11.py"
-else
-    echo "✗ ERROR: GroupNorm fix MISSING from multimodal_yolo11.py"
-    echo "  The server still has old code. Cannot proceed — would crash at end of epoch 1."
-    exit 1
-fi
+echo "===== Applying critical patches ====="
+python3 - <<'PYEOF'
+import os, sys
+
+def patch(path, replacements):
+    if not os.path.exists(path):
+        print(f"  SKIP (not found): {path}"); return
+    with open(path) as f: txt = f.read()
+    n = 0
+    for old, new in replacements:
+        if old in txt:
+            txt = txt.replace(old, new); n += 1
+    if n:
+        with open(path, 'w') as f: f.write(txt)
+        print(f"  PATCHED  {path}  ({n} fix(es) applied)")
+    else:
+        print(f"  OK       {path}  (already up to date)")
+
+# Fix 1 — GroupNorm in weight_net (prevents batch_size=1 crash)
+patch("multimodal_yolo11.py", [
+    ("nn.BatchNorm2d(weight_net_in_channels // 4)",
+     "nn.GroupNorm(1, weight_net_in_channels // 4)"),
+])
+
+# Fix 2 — drop_last=True in train DataLoader (belt-and-suspenders)
+with open("train.py") as f: txt = f.read()
+if "drop_last=True" not in txt:
+    # Match the closing of the train DataLoader call
+    for old, new in [
+        ("collate_fn=multimodal_collate,\n        )",
+         "collate_fn=multimodal_collate,\n        drop_last=True,\n        )"),
+        ("collate_fn=multimodal_collate,\n    )",
+         "collate_fn=multimodal_collate,\n    drop_last=True,\n    )"),
+    ]:
+        if old in txt:
+            txt = txt.replace(old, new, 1)
+            with open("train.py", 'w') as f: f.write(txt)
+            print("  PATCHED  train.py  (added drop_last=True)")
+            break
+    else:
+        print("  WARN     train.py  (drop_last pattern not found — check manually)")
+else:
+    print("  OK       train.py  (drop_last=True already present)")
+
+# Final check — fail fast if GroupNorm still missing
+with open("multimodal_yolo11.py") as f: txt = f.read()
+if "GroupNorm(1, weight_net_in_channels // 4)" not in txt:
+    print("FATAL: GroupNorm patch failed. Cannot train.")
+    sys.exit(1)
+print("✓ All patches verified")
+PYEOF
+
+# Clear Python bytecode cache so patched .py files are always used
+find "$SCRIPT_DIR" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+echo "✓ Bytecode cache cleared"
 
 
 
