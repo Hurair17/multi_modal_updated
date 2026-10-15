@@ -17,27 +17,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ===========================================================
-# 0. Git Fetch & Checkout New Branch
+# 0. Git Sync — hard-reset to remote to avoid stale/dirty state
 # ===========================================================
 echo ""
 echo "===== Syncing Git Branch ====="
 
-# 1. Fetch all latest branches from GitHub
-git fetch origin
-
-# 2. Switch to your new branch (replace 'my-new-feature' with your real branch name)
 TARGET_BRANCH="modal_changes"
 
-if git show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
-    echo "Switching to existing local branch: $TARGET_BRANCH"
-    git checkout "$TARGET_BRANCH"
-else
-    echo "Creating and tracking remote branch: $TARGET_BRANCH"
+cd "$SCRIPT_DIR"
+
+# Fetch latest from remote
+git fetch origin
+
+# Create local branch tracking remote if it doesn't exist yet
+if ! git show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
     git checkout -b "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
 fi
 
-# 3. Pull the absolute newest code on that branch
-git pull origin "$TARGET_BRANCH"
+# Hard-reset to remote — discards any local modifications on the server
+# This is the only reliable way to ensure the server runs the latest code.
+git checkout "$TARGET_BRANCH"
+git reset --hard "origin/$TARGET_BRANCH"
+
+echo "Code synced to: $(git log -1 --oneline)"
 
 
 
