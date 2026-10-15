@@ -60,6 +60,8 @@ def parse_args():
                         help="Fusion module type (default: gated)")
     parser.add_argument("--workers",      type=int,   default=4,
                         help="DataLoader worker processes (default: 4)")
+    parser.add_argument("--pretrained",   type=str,   default=None,
+                        help="Path to yolo11m.pt to initialise camera backbone (e.g. yolo11m.pt)")
     return parser.parse_args()
 
 class MultiModalYOLOLoss:
@@ -738,7 +740,7 @@ def main(args=None):
     if use_multi_scale:
         # Define size range (must be multiples of stride=32)
         img_size_min = 320   # Minimum size
-        img_size_max = 480   # Maximum size (reduced from 640 to prevent OOM)
+        img_size_max = 640   # Maximum size (reduced from 640 to prevent OOM)
         img_size_step = 32   # Step size (YOLO stride)
 
         # Calculate all possible sizes
@@ -898,6 +900,60 @@ def main(args=None):
         lidar_in_ch=3,
         fusion_type=args.fusion_type,
     ).to(device)
+
+    # Load pretrained camera backbone weights from yolo11m.pt (if provided)
+    if args.pretrained:
+        print(f"\n[INFO] Loading pretrained backbone from: {args.pretrained}")
+        ckpt = torch.load(args.pretrained, map_location="cpu", weights_only=False)
+        # yolo11m.pt stores the full YOLO model; extract its state dict
+        if isinstance(ckpt, dict) and "model" in ckpt:
+            src_sd = ckpt["model"].float().state_dict()
+        elif hasattr(ckpt, "state_dict"):
+            src_sd = ckpt.float().state_dict()
+        else:
+            src_sd = ckpt
+        # Map yolo11m backbone keys (model.0..model.10) -> our backbone_cam keys
+        # yolo11m backbone layers: model.0=Conv P1, model.1=Conv P2, model.2=C3k2,
+        #   model.3=Conv P3, model.4=C3k2, model.5=Conv P4, model.6=C3k2,
+        #   model.7=C3k2, model.8=Conv P5, model.9=C3k2, model.10=SPPF
+        YOLO_TO_OURS = {
+            "model.0.": "backbone_cam.layer0.",
+            "model.1.": "backbone_cam.layer1.",
+            "model.2.": "backbone_cam.layer2.",
+            "model.3.": "backbone_cam.layer3.",
+            "model.4.": "backbone_cam.layer4.",
+            "model.5.": "backbone_cam.layer5.",
+            "model.6.": "backbone_cam.layer6.",
+            "model.7.": "backbone_cam.layer7.",
+            "model.8.": "backbone_cam.layer8.",
+            "model.9.": "backbone_cam.layer9.",
+            "model.10.": "backbone_cam.layer10.",
+        }
+        mapped, skipped = {}, 0
+        for src_key, val in src_sd.items():
+            for prefix, new_prefix in YOLO_TO_OURS.items():
+                if src_key.startswith(prefix):
+                    mapped[src_key.replace(prefix, new_prefix, 1)] = val
+                    break
+            else:
+                skipped += 1
+        # Filter shape mismatches first — strict=False still crashes on size mismatches
+        model_sd = model.state_dict()
+        shape_ok = {k: v for k, v in mapped.items()
+                    if k in model_sd and model_sd[k].shape == v.shape}
+        shape_skip = len(mapped) - len(shape_ok)
+
+        result = model.load_state_dict(shape_ok, strict=False)
+        loaded = len(shape_ok) - len(result.missing_keys)
+        print(f"   Backbone keys loaded   : {loaded}")
+        print(f"   Shape mismatch skipped : {shape_skip}  ← if >0, wrong .pt variant")
+        print(f"   Missing (random init)  : {len(result.missing_keys)}")
+        print(f"   Unexpected (ignored)   : {len(result.unexpected_keys)}")
+        print(f"   Skipped (non-backbone) : {skipped}")
+        if loaded == 0:
+            print(f"\n   [WARN] 0 backbone weights loaded.")
+            print(f"          Your backbone uses 1.5x channels (96/192/768/1536).")
+            print(f"          yolo11m.pt uses 0.5x (64/128/512). Try --pretrained yolo11l.pt")
 
     # 3. Loss function (Final Fix: Attach attributes to the full model for v8DetectionLoss)
     
@@ -1201,9 +1257,12 @@ def main(args=None):
                 ])
             # ============================================================================
 
-            # Save checkpoint
-            if (epoch+1) % 10 ==0:
-                ckpt_path = Path("runs_multimodal") / f"epoch{epoch+1}.pt"
+            # Save best model (based on mAP50)
+            current_map50 = val_results.get('mAP50', 0.0)
+            if current_map50 > best_map50:
+                best_map50 = current_map50
+                best_epoch = epoch + 1
+                ckpt_path = Path("runs_multimodal") / "best.pt"
                 ckpt_path.parent.mkdir(parents=True, exist_ok=True)
                 torch.save({
                     'epoch': epoch + 1,
@@ -1213,7 +1272,7 @@ def main(args=None):
                     'val_results': val_results,
                     'history': history,
                 }, ckpt_path)
-                print(f"   Checkpoint saved: {ckpt_path}")
+                print(f"   Best model saved: {ckpt_path}  (mAP50={best_map50:.4f}, epoch {best_epoch})")
 
         # Plot training curves at the end
         
