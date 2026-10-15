@@ -17,99 +17,33 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ===========================================================
-# 0. Ensure latest code from GitHub
-#    Strategy:
-#      A. If scratch folder IS a git repo  → reset --hard
-#      B. If it is NOT a git repo          → fresh clone into temp, copy .py files
-#    Then verify the GroupNorm fix is present before training starts.
+# 0. Clone latest code to /tmp (WRITABLE) and use it for training
+#
+#    Root cause of repeated BatchNorm crash:
+#      /app/scratch/input/ is READ-ONLY on this server platform.
+#      No amount of git-reset or in-place patching can fix the files
+#      in SCRIPT_DIR. Solution: always clone fresh into /tmp which
+#      IS writable, and run all Python from there.
 # ===========================================================
 echo ""
-echo "===== Syncing Latest Code from GitHub ====="
+echo "===== Cloning latest code to writable workspace ====="
 
 TARGET_BRANCH="modal_changes"
 REPO_URL="https://github.com/Hurair17/multi_modal.git"
 
-cd "$SCRIPT_DIR"
+# /tmp is always writable; blow away any previous run's clone
+CODE_DIR="/tmp/multimodal_code"
+rm -rf "$CODE_DIR"
+git clone --depth 1 --branch "$TARGET_BRANCH" "$REPO_URL" "$CODE_DIR"
+echo "Cloned: $(git -C $CODE_DIR log -1 --oneline)"
 
-if git rev-parse --git-dir > /dev/null 2>&1; then
-    # ── Case A: proper git repo ─────────────────────────────
-    echo "Git repo detected — running reset --hard"
-    git fetch origin
-    git checkout "$TARGET_BRANCH" 2>/dev/null || true
-    git reset --hard "origin/$TARGET_BRANCH"
-    echo "Synced to: $(git log -1 --oneline)"
+# Verify the GroupNorm fix is in the fresh clone before wasting time
+if grep -q "GroupNorm(1, weight_net_in_channels // 4)" "$CODE_DIR/multimodal_yolo11.py"; then
+    echo "✓ GroupNorm fix confirmed"
 else
-    # ── Case B: flat file copy (no .git) ────────────────────
-    echo "No .git directory — cloning fresh copy from GitHub"
-    TMPCLONE=$(mktemp -d)
-    git clone --depth 1 --branch "$TARGET_BRANCH" "$REPO_URL" "$TMPCLONE"
-    # Overwrite every .py and .txt in the script dir with the latest from GitHub
-    cp "$TMPCLONE"/*.py  "$SCRIPT_DIR/"
-    cp "$TMPCLONE"/*.txt "$SCRIPT_DIR/" 2>/dev/null || true
-    cp "$TMPCLONE"/*.sh  "$SCRIPT_DIR/" 2>/dev/null || true
-    rm -rf "$TMPCLONE"
-    echo "Files updated from fresh clone (branch: $TARGET_BRANCH)"
+    echo "✗ FATAL: GroupNorm missing in fresh clone — check GitHub repo"
+    exit 1
 fi
-
-# ── Apply critical patches directly (git-independent, idempotent) ────
-# Runs AFTER git sync so it catches both: git-updated files AND original
-# uploaded files that git failed to update.
-echo ""
-echo "===== Applying critical patches ====="
-python3 - <<'PYEOF'
-import os, sys
-
-def patch(path, replacements):
-    if not os.path.exists(path):
-        print(f"  SKIP (not found): {path}"); return
-    with open(path) as f: txt = f.read()
-    n = 0
-    for old, new in replacements:
-        if old in txt:
-            txt = txt.replace(old, new); n += 1
-    if n:
-        with open(path, 'w') as f: f.write(txt)
-        print(f"  PATCHED  {path}  ({n} fix(es) applied)")
-    else:
-        print(f"  OK       {path}  (already up to date)")
-
-# Fix 1 — GroupNorm in weight_net (prevents batch_size=1 crash)
-patch("multimodal_yolo11.py", [
-    ("nn.BatchNorm2d(weight_net_in_channels // 4)",
-     "nn.GroupNorm(1, weight_net_in_channels // 4)"),
-])
-
-# Fix 2 — drop_last=True in train DataLoader (belt-and-suspenders)
-with open("train.py") as f: txt = f.read()
-if "drop_last=True" not in txt:
-    # Match the closing of the train DataLoader call
-    for old, new in [
-        ("collate_fn=multimodal_collate,\n        )",
-         "collate_fn=multimodal_collate,\n        drop_last=True,\n        )"),
-        ("collate_fn=multimodal_collate,\n    )",
-         "collate_fn=multimodal_collate,\n    drop_last=True,\n    )"),
-    ]:
-        if old in txt:
-            txt = txt.replace(old, new, 1)
-            with open("train.py", 'w') as f: f.write(txt)
-            print("  PATCHED  train.py  (added drop_last=True)")
-            break
-    else:
-        print("  WARN     train.py  (drop_last pattern not found — check manually)")
-else:
-    print("  OK       train.py  (drop_last=True already present)")
-
-# Final check — fail fast if GroupNorm still missing
-with open("multimodal_yolo11.py") as f: txt = f.read()
-if "GroupNorm(1, weight_net_in_channels // 4)" not in txt:
-    print("FATAL: GroupNorm patch failed. Cannot train.")
-    sys.exit(1)
-print("✓ All patches verified")
-PYEOF
-
-# Clear Python bytecode cache so patched .py files are always used
-find "$SCRIPT_DIR" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-echo "✓ Bytecode cache cleared"
 
 
 
@@ -396,8 +330,9 @@ echo ""
 echo "===== Train Multimodal YOLO11 (cross_attn fusion) ====="
 
 # cd into OUT so runs_multimodal/ and CSV logs are created inside /app/output/hurair_cross_attn/
+# Use CODE_DIR (writable /tmp clone) for all Python files — NOT the read-only SCRIPT_DIR
 cd "$OUT"
-python "$SCRIPT_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 100 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4 --pretrained "$PRETRAINED_PT"
+python "$CODE_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 100 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4 --pretrained "$PRETRAINED_PT"
 
 
 # python train.py \
