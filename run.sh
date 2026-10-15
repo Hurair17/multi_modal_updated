@@ -17,29 +17,49 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ===========================================================
-# 0. Git Sync — hard-reset to remote to avoid stale/dirty state
+# 0. Ensure latest code from GitHub
+#    Strategy:
+#      A. If scratch folder IS a git repo  → reset --hard
+#      B. If it is NOT a git repo          → fresh clone into temp, copy .py files
+#    Then verify the GroupNorm fix is present before training starts.
 # ===========================================================
 echo ""
-echo "===== Syncing Git Branch ====="
+echo "===== Syncing Latest Code from GitHub ====="
 
 TARGET_BRANCH="modal_changes"
+REPO_URL="https://github.com/Hurair17/multi_modal.git"
 
 cd "$SCRIPT_DIR"
 
-# Fetch latest from remote
-git fetch origin
-
-# Create local branch tracking remote if it doesn't exist yet
-if ! git show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
-    git checkout -b "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+if git rev-parse --git-dir > /dev/null 2>&1; then
+    # ── Case A: proper git repo ─────────────────────────────
+    echo "Git repo detected — running reset --hard"
+    git fetch origin
+    git checkout "$TARGET_BRANCH" 2>/dev/null || true
+    git reset --hard "origin/$TARGET_BRANCH"
+    echo "Synced to: $(git log -1 --oneline)"
+else
+    # ── Case B: flat file copy (no .git) ────────────────────
+    echo "No .git directory — cloning fresh copy from GitHub"
+    TMPCLONE=$(mktemp -d)
+    git clone --depth 1 --branch "$TARGET_BRANCH" "$REPO_URL" "$TMPCLONE"
+    # Overwrite every .py and .txt in the script dir with the latest from GitHub
+    cp "$TMPCLONE"/*.py  "$SCRIPT_DIR/"
+    cp "$TMPCLONE"/*.txt "$SCRIPT_DIR/" 2>/dev/null || true
+    cp "$TMPCLONE"/*.sh  "$SCRIPT_DIR/" 2>/dev/null || true
+    rm -rf "$TMPCLONE"
+    echo "Files updated from fresh clone (branch: $TARGET_BRANCH)"
 fi
 
-# Hard-reset to remote — discards any local modifications on the server
-# This is the only reliable way to ensure the server runs the latest code.
-git checkout "$TARGET_BRANCH"
-git reset --hard "origin/$TARGET_BRANCH"
-
-echo "Code synced to: $(git log -1 --oneline)"
+# ── Verify the critical GroupNorm fix is present ────────────
+echo ""
+if grep -q "GroupNorm(1, weight_net_in_channels // 4)" "$SCRIPT_DIR/multimodal_yolo11.py"; then
+    echo "✓ GroupNorm fix verified in multimodal_yolo11.py"
+else
+    echo "✗ ERROR: GroupNorm fix MISSING from multimodal_yolo11.py"
+    echo "  The server still has old code. Cannot proceed — would crash at end of epoch 1."
+    exit 1
+fi
 
 
 
