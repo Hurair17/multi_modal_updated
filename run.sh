@@ -292,6 +292,32 @@ fi
 # echo "Camera-only baseline done."
 
 # ===========================================================
+# 8b. Download pretrained backbone (yolo11x.pt)
+#     Must happen BEFORE cd "$OUT" so the file lands in $SCRIPT_DIR
+#     and we can pass an absolute path to train.py
+# ===========================================================
+echo ""
+echo "===== Download pretrained backbone ====="
+PRETRAINED_PT="$SCRIPT_DIR/yolo11x.pt"
+if [[ -f "$PRETRAINED_PT" ]]; then
+    echo "yolo11x.pt already present: $PRETRAINED_PT"
+else
+    echo "Downloading yolo11x.pt -> $PRETRAINED_PT ..."
+    python -c "
+from ultralytics import YOLO
+import shutil, os
+model = YOLO('yolo11x.pt')   # downloads to ultralytics cache
+# locate the cached file and copy next to the script
+src = model.ckpt_path if hasattr(model, 'ckpt_path') else 'yolo11x.pt'
+dst = '$PRETRAINED_PT'
+if os.path.abspath(src) != os.path.abspath(dst):
+    shutil.copy2(src, dst)
+print('Saved to:', dst)
+"
+    echo "Download complete."
+fi
+
+# ===========================================================
 # 9. Train Multimodal YOLO11 (main model)
 # ===========================================================
 echo ""
@@ -299,7 +325,7 @@ echo "===== Train Multimodal YOLO11 (cross_attn fusion) ====="
 
 # cd into OUT so runs_multimodal/ and CSV logs are created inside /app/output/hurair_cross_attn/
 cd "$OUT"
-python "$SCRIPT_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 100 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4 --pretrained yolo11x.pt
+python "$SCRIPT_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 100 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4 --pretrained "$PRETRAINED_PT"
 
 
 # python train.py \
