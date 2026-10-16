@@ -37,11 +37,11 @@ rm -rf "$CODE_DIR"
 git clone --depth 1 --branch "$TARGET_BRANCH" "$REPO_URL" "$CODE_DIR"
 echo "Cloned: $(git -C $CODE_DIR log -1 --oneline)"
 
-# Verify the GroupNorm fix is in the fresh clone before wasting time
-if grep -q "GroupNorm(1, weight_net_in_channels // 4)" "$CODE_DIR/multimodal_yolo11.py"; then
-    echo "✓ GroupNorm fix confirmed"
+# Verify the bottleneck CrossAttnFusion is in the fresh clone before wasting time
+if grep -q "bottleneck_dim" "$CODE_DIR/multimodal_yolo11.py"; then
+    echo "✓ Bottleneck CrossAttnFusion confirmed"
 else
-    echo "✗ FATAL: GroupNorm missing in fresh clone — check GitHub repo"
+    echo "✗ FATAL: bottleneck_dim missing in fresh clone — check GitHub repo"
     exit 1
 fi
 
@@ -278,22 +278,30 @@ fi
 
 # ===========================================================
 # 8. Camera-only YOLO11m baseline (reviewer ablation)
+#    Uses train_baseline.py which restricts multi-scale to 320-640
+#    — identical range to the multimodal model (ultralytics built-in
+#      multi_scale=True would go up to 960 px, unfairly wider).
 # ===========================================================
 # echo ""
-# echo "===== Camera-only YOLO11m baseline ====="
+# echo "===== Camera-only YOLO11m baseline (320-640 multi-scale) ====="
 
-# yolo train \
-#     model=yolo11m.yaml \
-#     data="$OUTPUT_DIR/camera_only.yaml" \
-#     epochs=100 \
-#     batch=4 \
-#     imgsz=416 \
-#     multi_scale=True \
-#     device=0 \
-#     workers=4 \
-#     project=runs_baseline \
-#     name=yolo11m_camera_only \
-#     pretrained=False
+# # Write camera_only.yaml (camera images only, same split as multimodal)
+# cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
+# path: $OUTPUT_DIR
+# train: train/camera
+# val:   val/camera
+# nc: 10
+# names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
+# YAML
+# echo "Written: $OUTPUT_DIR/camera_only.yaml"
+
+# python "$CODE_DIR/train_baseline.py" \
+#     --data    "$OUTPUT_DIR/camera_only.yaml" \
+#     --output  "$OUT/runs_baseline" \
+#     --epochs  100 \
+#     --batch   4 \
+#     --workers 4 \
+#     --device  0
 
 # echo "Camera-only baseline done."
 
@@ -332,7 +340,7 @@ echo "===== Train Multimodal YOLO11 (cross_attn fusion) ====="
 # cd into OUT so runs_multimodal/ and CSV logs are created inside /app/output/hurair_cross_attn/
 # Use CODE_DIR (writable /tmp clone) for all Python files — NOT the read-only SCRIPT_DIR
 cd "$OUT"
-python "$CODE_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 100 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4 --pretrained "$PRETRAINED_PT"
+python "$CODE_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 50 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4 --pretrained "$PRETRAINED_PT"
 
 
 # python train.py \

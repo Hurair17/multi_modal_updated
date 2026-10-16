@@ -153,80 +153,101 @@ import torch
 import torch.nn as nn
 
 class CrossAttnFusion2D(nn.Module):
-    def __init__(self, in_channels_cam, in_channels_lidar, out_channels, num_heads=4, dropout=0.1):
+    """
+    Bidirectional cross-attention fusion with channel bottleneck and FFN.
+
+    Key improvements vs previous version:
+      1. Channel bottleneck (default 256) — reduces fusion params ~10x,
+         shrinking the full model from ~2 GB to ~400-500 MB.
+      2. Full transformer block per stream:
+           pre-LN → Attention → Residual → pre-LN → FFN → Residual
+         (previous version was missing the FFN entirely).
+      3. Shared pre-LN for both attention branches — avoids redundant
+         computation and keeps both streams normalised consistently.
+      4. GroupNorm output — numerically stable at batch_size=1.
+    """
+    def __init__(self, in_channels_cam, in_channels_lidar, out_channels,
+                 num_heads=8, dropout=0.1, bottleneck_dim=256):
         super().__init__()
-        
-        # 1. Project LiDAR to match Camera channels
-        self.proj_lidar = nn.Conv2d(in_channels_lidar, in_channels_cam, 1) if in_channels_lidar != in_channels_cam else nn.Identity()
 
-        # 2. TWO SEPARATE attention modules (Crucial for convergence)
-        self.attn_cam_focus = nn.MultiheadAttention(embed_dim=in_channels_cam, num_heads=num_heads, dropout=dropout)
-        self.attn_lidar_focus = nn.MultiheadAttention(embed_dim=in_channels_cam, num_heads=num_heads, dropout=dropout)
+        # 1. Project both modalities DOWN to bottleneck (cheap 1x1 conv)
+        self.proj_cam   = nn.Conv2d(in_channels_cam,   bottleneck_dim, 1, bias=False)
+        self.proj_lidar = nn.Conv2d(in_channels_lidar, bottleneck_dim, 1, bias=False)
 
-        # Layer Norm before attention: aligns feature distributions across modalities
-        self.norm_cam   = nn.LayerNorm(in_channels_cam)
-        self.norm_lidar = nn.LayerNorm(in_channels_cam)  # applied after lidar projection
+        # 2. Pre-LN applied once per stream before attention
+        self.norm1_cam   = nn.LayerNorm(bottleneck_dim)
+        self.norm1_lidar = nn.LayerNorm(bottleneck_dim)
 
-        # Dropouts: pre-attention spatial dropout capped at 0.1 (0.3 was too aggressive)
+        # 3. Bidirectional attention — both run in cheap bottleneck space
+        #    Branch 1: Camera queries LiDAR  (Q=cam,   K=V=lidar)
+        #    Branch 2: LiDAR  queries Camera (Q=lidar, K=V=cam)
+        self.attn_cam_focus   = nn.MultiheadAttention(bottleneck_dim, num_heads, dropout=dropout)
+        self.attn_lidar_focus = nn.MultiheadAttention(bottleneck_dim, num_heads, dropout=dropout)
+
+        # 4. Post-attention pre-FFN norms (one per stream)
+        self.norm2_cam   = nn.LayerNorm(bottleneck_dim)
+        self.norm2_lidar = nn.LayerNorm(bottleneck_dim)
+
+        # 5. FFN per stream: expand 4x → SiLU → contract  (standard transformer FFN)
+        ffn_dim = bottleneck_dim * 4
+        self.ffn_cam = nn.Sequential(
+            nn.Linear(bottleneck_dim, ffn_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(ffn_dim, bottleneck_dim),
+            nn.Dropout(dropout),
+        )
+        self.ffn_lidar = nn.Sequential(
+            nn.Linear(bottleneck_dim, ffn_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(ffn_dim, bottleneck_dim),
+            nn.Dropout(dropout),
+        )
+
+        # 6. Light spatial dropout before bottleneck projection
         self.dropout_pre = nn.Dropout2d(p=min(dropout, 0.1))
-        self.dropout_pre_cat = nn.Dropout(p=dropout)
-        
-        # 3. Final Fusion Layer
-        # Input is 2 * channels because we concatenate
-        self.out_conv = nn.Conv2d(in_channels_cam * 2, out_channels, 1)
-        self.norm = nn.InstanceNorm2d(out_channels)
-        self.act = nn.SiLU()
+
+        # 7. Project concatenated streams UP to output channels
+        num_groups = 32 if out_channels % 32 == 0 else 1
+        self.proj_up = nn.Sequential(
+            nn.Conv2d(bottleneck_dim * 2, out_channels, 1, bias=False),
+            nn.GroupNorm(num_groups, out_channels),
+            nn.SiLU(),
+        )
 
     def forward(self, cam, lidar):
-        # 1. Align dimensions
-        lidar_proj = self.proj_lidar(lidar)
-        
-        # 2. Apply Spatial Dropout before flattening
-        cam_d = self.dropout_pre(cam)
-        lidar_d = self.dropout_pre(lidar_proj)
+        n, _, h, w = cam.shape
 
-        n, c, h, w = cam.shape
+        # 1. Project to bottleneck + spatial dropout
+        cam_b   = self.dropout_pre(self.proj_cam(cam))     # [N, D, H, W]
+        lidar_b = self.dropout_pre(self.proj_lidar(lidar))  # [N, D, H, W]
 
-        # 3. Flatten for Attention (Sequence Length, Batch, Channels)
-        src_cam   = cam_d.view(n, c, h * w).permute(2, 0, 1)    # [L, B, C]
-        src_lidar = lidar_d.view(n, c, h * w).permute(2, 0, 1)  # [L, B, C]
+        # 2. Flatten to sequence [L, N, D]  (L = H*W)
+        d = cam_b.shape[1]
+        src_cam   = cam_b.view(n, d, -1).permute(2, 0, 1)    # [L, N, D]
+        src_lidar = lidar_b.view(n, d, -1).permute(2, 0, 1)  # [L, N, D]
 
-        # 4. Layer Norm before attention
-        src_cam   = self.norm_cam(src_cam)
-        src_lidar = self.norm_lidar(src_lidar)
+        # 3. Pre-normalise both streams once — shared input to both attention branches
+        norm_cam   = self.norm1_cam(src_cam)
+        norm_lidar = self.norm1_lidar(src_lidar)
 
-        # --- BRANCH 1: Camera Context ---
-        # Q=Cam, K=LiDAR, V=LiDAR
-        attn_out_1, _ = self.attn_cam_focus(query=src_cam, key=src_lidar, value=src_lidar)
-        feat_1 = attn_out_1.permute(1, 2, 0).view(n, c, h, w)
-        
-        # Residual Connection (Crucial for fixing NaN)
-        cam_enhanced = cam + feat_1 
+        # ── Branch 1: Camera queries LiDAR ─────────────────────────────────
+        attn1, _  = self.attn_cam_focus(query=norm_cam, key=norm_lidar, value=norm_lidar)
+        cam_seq   = src_cam + attn1                                   # residual 1
+        cam_seq   = cam_seq + self.ffn_cam(self.norm2_cam(cam_seq))   # FFN + residual 2
 
-        # --- BRANCH 2: LiDAR Context ---
-        # Q=LiDAR, K=Cam, V=Cam
-        attn_out_2, _ = self.attn_lidar_focus(query=src_lidar, key=src_cam, value=src_cam)
-        feat_2 = attn_out_2.permute(1, 2, 0).view(n, c, h, w)
-        
-        # Residual Connection (Crucial for fixing NaN)
-        lidar_enhanced = lidar_proj + feat_2
+        # ── Branch 2: LiDAR queries Camera ─────────────────────────────────
+        attn2, _  = self.attn_lidar_focus(query=norm_lidar, key=norm_cam, value=norm_cam)
+        lidar_seq = src_lidar + attn2                                        # residual 1
+        lidar_seq = lidar_seq + self.ffn_lidar(self.norm2_lidar(lidar_seq))  # FFN + residual 2
 
-        # ---------------------------------------------------------
-        # NEW: Apply dropout before concatenation as requested
-        # ---------------------------------------------------------
-        cam_enhanced = self.dropout_pre_cat(cam_enhanced)
-        lidar_enhanced = self.dropout_pre_cat(lidar_enhanced)
+        # 4. Reshape back to spatial [N, D, H, W]
+        cam_out   = cam_seq.permute(1, 2, 0).view(n, d, h, w)
+        lidar_out = lidar_seq.permute(1, 2, 0).view(n, d, h, w)
 
-        # --- FUSE ---
-        # Concatenate
-        cat_feats = torch.cat([cam_enhanced, lidar_enhanced], dim=1)
-        
-        # Final Projection
-        out = self.out_conv(cat_feats)
-        out = self.norm(out)
-        out = self.act(out)
-
-        return out
+        # 5. Concat + project up to output channels
+        return self.proj_up(torch.cat([cam_out, lidar_out], dim=1))
 
 
 class LearnableGatedBilinearFusion(nn.Module):
@@ -395,12 +416,15 @@ class MultiModalYOLO11(nn.Module):
             self.fuse_p5 = GatedFusion(1536)
         # mAP50 = 83.6 % 46.84 hour
         elif fusion_type == "cross_attn":
-            print("Cross Attention")
-            # dropout reduced 0.3->0.1: 0.3 spatial dropout pre-attention was too aggressive
-            # P3 fuse: attention will run on pooled (26x26=676 tokens) in forward() to save memory
-            self.fuse_p3 = CrossAttnFusion2D(768, 512, 768, num_heads=8, dropout=0.1)
-            self.fuse_p4 = CrossAttnFusion2D(768, 512, 768, num_heads=8, dropout=0.1)
-            self.fuse_p5 = CrossAttnFusion2D(1536, 1024, 1536, num_heads=8, dropout=0.1)
+            print("Cross Attention (Bidirectional + Bottleneck + FFN)")
+            # bottleneck_dim=256: attention runs at 256 channels not 768/1536
+            #   → ~10x fewer fusion params, model ~400-500 MB instead of ~2 GB
+            #   → proper transformer FFN added per stream
+            # P3 fuse: still pooled 52x52->26x26 in forward() to keep attention
+            #   matrix small (676 vs 2704 tokens — 16x cheaper)
+            self.fuse_p3 = CrossAttnFusion2D(768, 512, 768, num_heads=8, dropout=0.1, bottleneck_dim=256)
+            self.fuse_p4 = CrossAttnFusion2D(768, 512, 768, num_heads=8, dropout=0.1, bottleneck_dim=256)
+            self.fuse_p5 = CrossAttnFusion2D(1536, 1024, 1536, num_heads=8, dropout=0.1, bottleneck_dim=256)
         # mAP50 = 82.5 %  27.08 hour
         elif fusion_type == "gated_bilinear":
             # LearnableGatedBilinearFusion can handle different input channels

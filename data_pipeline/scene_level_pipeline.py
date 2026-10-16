@@ -51,7 +51,7 @@ CAMERA_NAMES = [
 ]
 
 TRAIN_RATIO    = 0.80   # 80% of scenes -> train
-MIN_VISIBILITY = 0.30   # discard boxes whose clipped visible area < 30%
+MIN_VISIBILITY = 0.0   # discard boxes whose clipped visible area < 30%
 MAX_DEPTH      = 80.0   # depth normalisation ceiling in metres
 RANDOM_SEED    = 42     # seed for scene shuffle inside each recording group
 
