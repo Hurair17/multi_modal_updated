@@ -266,7 +266,7 @@ for split in ["train", "val"]:
     print(f"  {split}: {copied} label files copied into camera/ ({len(files)} total)")
 PY
 
-Write camera_only.yaml with server-local absolute path
+# Write camera_only.yaml with server-local absolute path
 cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
 path: $OUTPUT_DIR
 train: train/camera
@@ -276,12 +276,12 @@ names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','
 YAML
 echo "Written: $OUTPUT_DIR/camera_only.yaml"
 
-===========================================================
-8. Camera-only YOLO11m baseline (reviewer ablation)
-   Uses train_baseline.py which restricts multi-scale to 320-640
-   — identical range to the multimodal model (ultralytics built-in
-     multi_scale=True would go up to 960 px, unfairly wider).
-===========================================================
+# ===========================================================
+# 8. Camera-only YOLO11m baseline (reviewer ablation)
+#    Uses train_baseline.py which restricts multi-scale to 320-640
+#    — identical range to the multimodal model (ultralytics built-in
+#      multi_scale=True would go up to 960 px, unfairly wider).
+# ===========================================================
 echo ""
 echo "===== Camera-only YOLO11m baseline (320-640 multi-scale) ====="
 
@@ -305,31 +305,31 @@ python "$CODE_DIR/train_baseline.py" \
 
 echo "Camera-only baseline done."
 
-# ===========================================================
-# 8b. Download pretrained backbone (yolo11x.pt)
-#     Must happen BEFORE cd "$OUT" so the file lands in $SCRIPT_DIR
-#     and we can pass an absolute path to train.py
-# ===========================================================
-echo ""
-echo "===== Download pretrained backbone ====="
-PRETRAINED_PT="$SCRIPT_DIR/yolo11x.pt"
-if [[ -f "$PRETRAINED_PT" ]]; then
-    echo "yolo11x.pt already present: $PRETRAINED_PT"
-else
-    echo "Downloading yolo11x.pt -> $PRETRAINED_PT ..."
-    python -c "
-from ultralytics import YOLO
-import shutil, os
-model = YOLO('yolo11x.pt')   # downloads to ultralytics cache
-# locate the cached file and copy next to the script
-src = model.ckpt_path if hasattr(model, 'ckpt_path') else 'yolo11x.pt'
-dst = '$PRETRAINED_PT'
-if os.path.abspath(src) != os.path.abspath(dst):
-    shutil.copy2(src, dst)
-print('Saved to:', dst)
-"
-    echo "Download complete."
-fi
+# # ===========================================================
+# # 8b. Download pretrained backbone (yolo11x.pt)
+# #     Must happen BEFORE cd "$OUT" so the file lands in $SCRIPT_DIR
+# #     and we can pass an absolute path to train.py
+# # ===========================================================
+# echo ""
+# echo "===== Download pretrained backbone ====="
+# PRETRAINED_PT="$SCRIPT_DIR/yolo11x.pt"
+# if [[ -f "$PRETRAINED_PT" ]]; then
+#     echo "yolo11x.pt already present: $PRETRAINED_PT"
+# else
+#     echo "Downloading yolo11x.pt -> $PRETRAINED_PT ..."
+#     python -c "
+# from ultralytics import YOLO
+# import shutil, os
+# model = YOLO('yolo11x.pt')   # downloads to ultralytics cache
+# # locate the cached file and copy next to the script
+# src = model.ckpt_path if hasattr(model, 'ckpt_path') else 'yolo11x.pt'
+# dst = '$PRETRAINED_PT'
+# if os.path.abspath(src) != os.path.abspath(dst):
+#     shutil.copy2(src, dst)
+# print('Saved to:', dst)
+# "
+#     echo "Download complete."
+# fi
 
 # ===========================================================
 # 9. Train Multimodal YOLO11 (main model)
