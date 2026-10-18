@@ -245,65 +245,65 @@ fi
 #    ultralytics finds labels via /images/ -> /labels/ substitution,
 #    so copy labels into camera/ and point yaml at camera/ directly.
 # ===========================================================
-# echo ""
-# echo "===== Prepare camera-only dataset for YOLO ====="
+echo ""
+echo "===== Prepare camera-only dataset for YOLO ====="
 
-# OUTPUT_DIR_ESC="$OUTPUT_DIR" python - <<'PY'
-# import shutil, os
-# base = os.environ["OUTPUT_DIR_ESC"]
-# for split in ["train", "val"]:
-#     ldir = os.path.join(base, split, "labels")
-#     cdir = os.path.join(base, split, "camera")
-#     if not os.path.isdir(ldir):
-#         print(f"  {split}: labels dir missing, skipping")
-#         continue
-#     files = [f for f in os.listdir(ldir) if f.endswith(".txt")]
-#     copied = sum(
-#         1 for f in files
-#         if not os.path.exists(os.path.join(cdir, f))
-#         and shutil.copy2(os.path.join(ldir, f), os.path.join(cdir, f)) is None
-#     )
-#     print(f"  {split}: {copied} label files copied into camera/ ({len(files)} total)")
-# PY
+OUTPUT_DIR_ESC="$OUTPUT_DIR" python - <<'PY'
+import shutil, os
+base = os.environ["OUTPUT_DIR_ESC"]
+for split in ["train", "val"]:
+    ldir = os.path.join(base, split, "labels")
+    cdir = os.path.join(base, split, "camera")
+    if not os.path.isdir(ldir):
+        print(f"  {split}: labels dir missing, skipping")
+        continue
+    files = [f for f in os.listdir(ldir) if f.endswith(".txt")]
+    copied = sum(
+        1 for f in files
+        if not os.path.exists(os.path.join(cdir, f))
+        and shutil.copy2(os.path.join(ldir, f), os.path.join(cdir, f)) is None
+    )
+    print(f"  {split}: {copied} label files copied into camera/ ({len(files)} total)")
+PY
 
-# Write camera_only.yaml with server-local absolute path
-# cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
-# path: $OUTPUT_DIR
-# train: train/camera
-# val:   val/camera
-# nc: 10
-# names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
-# YAML
-# echo "Written: $OUTPUT_DIR/camera_only.yaml"
+Write camera_only.yaml with server-local absolute path
+cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
+path: $OUTPUT_DIR
+train: train/camera
+val:   val/camera
+nc: 10
+names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
+YAML
+echo "Written: $OUTPUT_DIR/camera_only.yaml"
 
-# ===========================================================
-# 8. Camera-only YOLO11m baseline (reviewer ablation)
-#    Uses train_baseline.py which restricts multi-scale to 320-640
-#    — identical range to the multimodal model (ultralytics built-in
-#      multi_scale=True would go up to 960 px, unfairly wider).
-# ===========================================================
-# echo ""
-# echo "===== Camera-only YOLO11m baseline (320-640 multi-scale) ====="
+===========================================================
+8. Camera-only YOLO11m baseline (reviewer ablation)
+   Uses train_baseline.py which restricts multi-scale to 320-640
+   — identical range to the multimodal model (ultralytics built-in
+     multi_scale=True would go up to 960 px, unfairly wider).
+===========================================================
+echo ""
+echo "===== Camera-only YOLO11m baseline (320-640 multi-scale) ====="
 
-# # Write camera_only.yaml (camera images only, same split as multimodal)
-# cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
-# path: $OUTPUT_DIR
-# train: train/camera
-# val:   val/camera
-# nc: 10
-# names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
-# YAML
-# echo "Written: $OUTPUT_DIR/camera_only.yaml"
+# Write camera_only.yaml (camera images only, same split as multimodal)
+cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
+path: $OUTPUT_DIR
+train: train/camera
+val:   val/camera
+nc: 10
+names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
+YAML
+echo "Written: $OUTPUT_DIR/camera_only.yaml"
 
-# python "$CODE_DIR/train_baseline.py" \
-#     --data    "$OUTPUT_DIR/camera_only.yaml" \
-#     --output  "$OUT/runs_baseline" \
-#     --epochs  100 \
-#     --batch   4 \
-#     --workers 4 \
-#     --device  0
+python "$CODE_DIR/train_baseline.py" \
+    --data    "$OUTPUT_DIR/camera_only.yaml" \
+    --output  "$OUT/runs_baseline" \
+    --epochs  100 \
+    --batch   4 \
+    --workers 4 \
+    --device  0
 
-# echo "Camera-only baseline done."
+echo "Camera-only baseline done."
 
 # ===========================================================
 # 8b. Download pretrained backbone (yolo11x.pt)
@@ -334,13 +334,13 @@ fi
 # ===========================================================
 # 9. Train Multimodal YOLO11 (main model)
 # ===========================================================
-echo ""
-echo "===== Train Multimodal YOLO11 (cross_attn fusion) ====="
+# echo ""
+# echo "===== Train Multimodal YOLO11 (cross_attn fusion) ====="
 
 # cd into OUT so runs_multimodal/ and CSV logs are created inside /app/output/hurair_cross_attn/
 # Use CODE_DIR (writable /tmp clone) for all Python files — NOT the read-only SCRIPT_DIR
-cd "$OUT"
-python "$CODE_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 50 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4 --pretrained "$PRETRAINED_PT"
+# cd "$OUT"
+# python "$CODE_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 50 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4 --pretrained "$PRETRAINED_PT"
 
 
 # python train.py \
