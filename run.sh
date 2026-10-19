@@ -337,8 +337,8 @@ fi
 echo ""
 echo "===== Train Multimodal YOLO11 (cross_attn fusion) ====="
 
-cd into OUT so runs_multimodal/ and CSV logs are created inside /app/output/hurair_cross_attn/
-Use CODE_DIR (writable /tmp clone) for all Python files — NOT the read-only SCRIPT_DIR
+# cd into OUT so runs_multimodal/ and CSV logs are created inside /app/output/hurair_cross_attn/
+# Use CODE_DIR (writable /tmp clone) for all Python files — NOT the read-only SCRIPT_DIR
 cd "$OUT"
 python "$CODE_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 50 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4
 
