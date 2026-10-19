@@ -240,31 +240,31 @@ PY
     echo "Dataset generation complete."
 fi
 
-# ===========================================================
-# 7. Prepare camera-only YOLO dataset
-#    ultralytics finds labels via /images/ -> /labels/ substitution,
-#    so copy labels into camera/ and point yaml at camera/ directly.
-# ===========================================================
-echo ""
-echo "===== Prepare camera-only dataset for YOLO ====="
+# # ===========================================================
+# # 7. Prepare camera-only YOLO dataset
+# #    ultralytics finds labels via /images/ -> /labels/ substitution,
+# #    so copy labels into camera/ and point yaml at camera/ directly.
+# # ===========================================================
+# echo ""
+# echo "===== Prepare camera-only dataset for YOLO ====="
 
-OUTPUT_DIR_ESC="$OUTPUT_DIR" python - <<'PY'
-import shutil, os
-base = os.environ["OUTPUT_DIR_ESC"]
-for split in ["train", "val"]:
-    ldir = os.path.join(base, split, "labels")
-    cdir = os.path.join(base, split, "camera")
-    if not os.path.isdir(ldir):
-        print(f"  {split}: labels dir missing, skipping")
-        continue
-    files = [f for f in os.listdir(ldir) if f.endswith(".txt")]
-    copied = sum(
-        1 for f in files
-        if not os.path.exists(os.path.join(cdir, f))
-        and shutil.copy2(os.path.join(ldir, f), os.path.join(cdir, f)) is None
-    )
-    print(f"  {split}: {copied} label files copied into camera/ ({len(files)} total)")
-PY
+# OUTPUT_DIR_ESC="$OUTPUT_DIR" python - <<'PY'
+# import shutil, os
+# base = os.environ["OUTPUT_DIR_ESC"]
+# for split in ["train", "val"]:
+#     ldir = os.path.join(base, split, "labels")
+#     cdir = os.path.join(base, split, "camera")
+#     if not os.path.isdir(ldir):
+#         print(f"  {split}: labels dir missing, skipping")
+#         continue
+#     files = [f for f in os.listdir(ldir) if f.endswith(".txt")]
+#     copied = sum(
+#         1 for f in files
+#         if not os.path.exists(os.path.join(cdir, f))
+#         and shutil.copy2(os.path.join(ldir, f), os.path.join(cdir, f)) is None
+#     )
+#     print(f"  {split}: {copied} label files copied into camera/ ({len(files)} total)")
+# PY
 
 # # Write camera_only.yaml with server-local absolute path
 # cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
