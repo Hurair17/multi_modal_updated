@@ -27,7 +27,7 @@ from ultralytics.models.yolo.detect.train import DetectionTrainer
 
 
 # ── Match exactly the multimodal multi-scale range ──────────────────────────
-IMG_SIZES  = list(range(320, 641, 32))   # [320, 352, 384, ..., 640]
+IMG_SIZES  = list(range(320, 481, 32))   # [320, 352, 384, ..., 640]
 SCALE_FREQ = 10                          # change size every N batches
 
 
@@ -36,7 +36,7 @@ class MultiScaleDetectionTrainer(DetectionTrainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._ms_batch_count = 0
-        self._ms_current_size = 640
+        self._ms_current_size = 480
 
     def preprocess_batch(self, batch):
         # Let ultralytics do its standard preprocessing (normalize, send to GPU)
@@ -66,7 +66,7 @@ def parse_args():
     p.add_argument("--data",    required=True,  help="Path to camera_only.yaml")
     p.add_argument("--output",  default="runs_baseline",
                    help="Output directory (default: runs_baseline)")
-    p.add_argument("--epochs",  type=int, default=50)
+    p.add_argument("--epochs",  type=int, default=100)
     p.add_argument("--batch",   type=int, default=4)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--device",  default="0")
@@ -87,13 +87,16 @@ def main():
     print("  Method: DetectionTrainer.preprocess_batch override")
     print("=" * 60)
 
-    model = YOLO("yolo11m.pt")   # pretrained COCO weights
+    # model = YOLO("yolo11m.pt")    # pretrained COCO weights (yolo11m)
+    # model = YOLO("yolo11m.yaml")  # random init yolo11m (no pretrained)
+    # model = YOLO("yolo11x.yaml")   # random init yolo11x -- matches multimodal backbone capacity
+    model = YOLO("yolo11x.yaml")   # random init yolo11x -- matches multimodal backbone capacity
 
     model.train(
         data=args.data,
         epochs=args.epochs,
         batch=args.batch,
-        imgsz=640,         # DataLoader loads at 640; trainer resizes per batch
+        imgsz=480,         # DataLoader loads at 640; trainer resizes per batch
         multi_scale=False, # disable ultralytics +/-50% scaling; trainer handles it
         device=args.device,
         workers=args.workers,
