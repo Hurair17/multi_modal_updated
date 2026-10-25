@@ -305,11 +305,11 @@ python "$CODE_DIR/train_baseline.py" \
 
 echo "Camera-only baseline done."
 
-===========================================================
-8b. Download pretrained backbone (yolo11x.pt)
-    Must happen BEFORE cd "$OUT" so the file lands in $SCRIPT_DIR
-    and we can pass an absolute path to train.py
-===========================================================
+# ===========================================================
+# 8b. Download pretrained backbone (yolo11x.pt)
+#     Must happen BEFORE cd "$OUT" so the file lands in $SCRIPT_DIR
+#     and we can pass an absolute path to train.py
+# ===========================================================
 echo ""
 echo "===== Download pretrained backbone ====="
 PRETRAINED_PT="$SCRIPT_DIR/yolo11x.pt"
