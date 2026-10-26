@@ -17,6 +17,10 @@ from multimodal_dataset import MultiModalYoloDataset
 from ultralytics.utils.loss import v8DetectionLoss
 from balanced_sampler import ClassBalancedSampler, InstanceBalancedSampler
 
+# python train.py --data_root 'C:\Users\hurair\Desktop\YOLO\ultralytics\full_new_dataset' --epochs 100 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4 --pretrained yolo11m.pt
+
+
+
 # ---------------------------------------------------------------------------
 # Runtime API detection: ultralytics 8.3.x ships two different v8DetectionLoss
 # implementations that share the same version string.

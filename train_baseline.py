@@ -16,6 +16,9 @@
 #       --output /path/to/output_dir
 # python train_baseline.py --data "C:\Users\hurair\Desktop\MultiModel\scene_level_pipeline\dataset1\camera_only.yaml" --output "C:\Users\hurair\Desktop\MultiModal\multimodal_training\YOLO"
 
+# python train.py --data_root 'C:\Users\hurair\Desktop\YOLO\ultralytics\full_new_dataset' --epochs 100 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4 --pretrained yolo11m.pt
+
+
 
 import argparse
 import random
