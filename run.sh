@@ -240,107 +240,107 @@ PY
     echo "Dataset generation complete."
 fi
 
-# ===========================================================
-# 7. Prepare camera-only YOLO dataset
-#    ultralytics finds labels via /images/ -> /labels/ substitution,
-#    so copy labels into camera/ and point yaml at camera/ directly.
-# ===========================================================
-echo ""
-echo "===== Prepare camera-only dataset for YOLO ====="
+# # ===========================================================
+# # 7. Prepare camera-only YOLO dataset
+# #    ultralytics finds labels via /images/ -> /labels/ substitution,
+# #    so copy labels into camera/ and point yaml at camera/ directly.
+# # ===========================================================
+# echo ""
+# echo "===== Prepare camera-only dataset for YOLO ====="
 
-OUTPUT_DIR_ESC="$OUTPUT_DIR" python - <<'PY'
-import shutil, os
-base = os.environ["OUTPUT_DIR_ESC"]
-for split in ["train", "val"]:
-    ldir = os.path.join(base, split, "labels")
-    cdir = os.path.join(base, split, "camera")
-    if not os.path.isdir(ldir):
-        print(f"  {split}: labels dir missing, skipping")
-        continue
-    files = [f for f in os.listdir(ldir) if f.endswith(".txt")]
-    copied = sum(
-        1 for f in files
-        if not os.path.exists(os.path.join(cdir, f))
-        and shutil.copy2(os.path.join(ldir, f), os.path.join(cdir, f)) is None
-    )
-    print(f"  {split}: {copied} label files copied into camera/ ({len(files)} total)")
-PY
+# OUTPUT_DIR_ESC="$OUTPUT_DIR" python - <<'PY'
+# import shutil, os
+# base = os.environ["OUTPUT_DIR_ESC"]
+# for split in ["train", "val"]:
+#     ldir = os.path.join(base, split, "labels")
+#     cdir = os.path.join(base, split, "camera")
+#     if not os.path.isdir(ldir):
+#         print(f"  {split}: labels dir missing, skipping")
+#         continue
+#     files = [f for f in os.listdir(ldir) if f.endswith(".txt")]
+#     copied = sum(
+#         1 for f in files
+#         if not os.path.exists(os.path.join(cdir, f))
+#         and shutil.copy2(os.path.join(ldir, f), os.path.join(cdir, f)) is None
+#     )
+#     print(f"  {split}: {copied} label files copied into camera/ ({len(files)} total)")
+# PY
 
-# Write camera_only.yaml with server-local absolute path
-cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
-path: $OUTPUT_DIR
-train: train/camera
-val:   val/camera
-nc: 10
-names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
-YAML
-echo "Written: $OUTPUT_DIR/camera_only.yaml"
+# # Write camera_only.yaml with server-local absolute path
+# cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
+# path: $OUTPUT_DIR
+# train: train/camera
+# val:   val/camera
+# nc: 10
+# names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
+# YAML
+# echo "Written: $OUTPUT_DIR/camera_only.yaml"
 
-# ===========================================================
-# 8. Camera-only YOLO11m baseline (reviewer ablation)
-#    Uses train_baseline.py which restricts multi-scale to 320-640
-#    — identical range to the multimodal model (ultralytics built-in
-#      multi_scale=True would go up to 960 px, unfairly wider).
-# ===========================================================
-echo ""
-echo "===== Camera-only YOLO11x baseline (320-640 multi-scale) ====="
+# # ===========================================================
+# # 8. Camera-only YOLO11m baseline (reviewer ablation)
+# #    Uses train_baseline.py which restricts multi-scale to 320-640
+# #    — identical range to the multimodal model (ultralytics built-in
+# #      multi_scale=True would go up to 960 px, unfairly wider).
+# # ===========================================================
+# echo ""
+# echo "===== Camera-only YOLO11x baseline (320-640 multi-scale) ====="
 
-# Write camera_only.yaml (camera images only, same split as multimodal)
-cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
-path: $OUTPUT_DIR
-train: train/camera
-val:   val/camera
-nc: 10
-names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
-YAML
-echo "Written: $OUTPUT_DIR/camera_only.yaml"
+# # Write camera_only.yaml (camera images only, same split as multimodal)
+# cat > "$OUTPUT_DIR/camera_only.yaml" <<YAML
+# path: $OUTPUT_DIR
+# train: train/camera
+# val:   val/camera
+# nc: 10
+# names: ['pedestrian','car','motorcycle','bicycle','bus','truck','construction','trailer','barrier','traffic_cone']
+# YAML
+# echo "Written: $OUTPUT_DIR/camera_only.yaml"
 
-python "$CODE_DIR/train_baseline.py" \
-    --data    "$OUTPUT_DIR/camera_only.yaml" \
-    --output  "$OUT/runs_baseline" \
-    --epochs  100 \
-    --batch   4 \
-    --workers 4 \
-    --device  0
+# python "$CODE_DIR/train_baseline.py" \
+#     --data    "$OUTPUT_DIR/camera_only.yaml" \
+#     --output  "$OUT/runs_baseline" \
+#     --epochs  100 \
+#     --batch   4 \
+#     --workers 4 \
+#     --device  0
 
-echo "Camera-only baseline done."
+# echo "Camera-only baseline done."
 
-# ===========================================================
-# 8b. Download pretrained backbone (yolo11x.pt)
-#     Must happen BEFORE cd "$OUT" so the file lands in $SCRIPT_DIR
-#     and we can pass an absolute path to train.py
-# ===========================================================
-echo ""
-echo "===== Download pretrained backbone ====="
-PRETRAINED_PT="$SCRIPT_DIR/yolo11x.pt"
-if [[ -f "$PRETRAINED_PT" ]]; then
-    echo "yolo11x.pt already present: $PRETRAINED_PT"
-else
-    echo "Downloading yolo11x.pt -> $PRETRAINED_PT ..."
-    python -c "
-from ultralytics import YOLO
-import shutil, os
-model = YOLO('yolo11x.pt')   # downloads to ultralytics cache
-# locate the cached file and copy next to the script
-src = model.ckpt_path if hasattr(model, 'ckpt_path') else 'yolo11x.pt'
-dst = '$PRETRAINED_PT'
-if os.path.abspath(src) != os.path.abspath(dst):
-    shutil.copy2(src, dst)
-print('Saved to:', dst)
-"
-    echo "Download complete."
-fi
+# # ===========================================================
+# # 8b. Download pretrained backbone (yolo11x.pt)
+# #     Must happen BEFORE cd "$OUT" so the file lands in $SCRIPT_DIR
+# #     and we can pass an absolute path to train.py
+# # ===========================================================
+# echo ""
+# echo "===== Download pretrained backbone ====="
+# PRETRAINED_PT="$SCRIPT_DIR/yolo11x.pt"
+# if [[ -f "$PRETRAINED_PT" ]]; then
+#     echo "yolo11x.pt already present: $PRETRAINED_PT"
+# else
+#     echo "Downloading yolo11x.pt -> $PRETRAINED_PT ..."
+#     python -c "
+# from ultralytics import YOLO
+# import shutil, os
+# model = YOLO('yolo11x.pt')   # downloads to ultralytics cache
+# # locate the cached file and copy next to the script
+# src = model.ckpt_path if hasattr(model, 'ckpt_path') else 'yolo11x.pt'
+# dst = '$PRETRAINED_PT'
+# if os.path.abspath(src) != os.path.abspath(dst):
+#     shutil.copy2(src, dst)
+# print('Saved to:', dst)
+# "
+#     echo "Download complete."
+# fi
 
 # ===========================================================
 # 9. Train Multimodal YOLO11 (main model)
 # ===========================================================
-# echo ""
-# echo "===== Train Multimodal YOLO11 (cross_attn fusion) ====="
+echo ""
+echo "===== Train Multimodal YOLO11 (cross_attn fusion) ====="
 
-# # cd into OUT so runs_multimodal/ and CSV logs are created inside /app/output/hurair_cross_attn/
-# # Use CODE_DIR (writable /tmp clone) for all Python files — NOT the read-only SCRIPT_DIR
-# cd "$OUT"
-# python "$CODE_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 100 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4
+# cd into OUT so runs_multimodal/ and CSV logs are created inside /app/output/hurair_cross_attn/
+# Use CODE_DIR (writable /tmp clone) for all Python files — NOT the read-only SCRIPT_DIR
+cd "$OUT"
+python "$CODE_DIR/train.py" --data_root "$OUTPUT_DIR" --epochs 100 --batch_size 4 --img_size 640 --nc 10 --fusion_type cross_attn --workers 4
 
 
 # python train.py \
@@ -351,7 +351,7 @@ fi
 #   --nc 10 \
 #   --fusion_type cross_attn \
 #   --workers 4 \
-#   --pretrained yolo11m.pt
+# #   --pretrained yolo11m.pt
 
 
 cd "$SCRIPT_DIR"
